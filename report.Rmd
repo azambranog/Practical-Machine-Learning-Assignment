@@ -1,0 +1,130 @@
+Use of a Simple Random Forest Model in classification of Dumbell Exercises
+========================================================
+
+# Summary
+In this assignment we try to predict the performance of dumbell exercises, from data comming from weareble devices, based on the experiments of [groupware@LES](http://groupware.les.inf.puc-rio.br/har). We made simple cleaning of the data based on removing labels and variables with large ammount of missing data. Because we found that many variables were highly correlated, we concluded that we could use use PCA to reduce the ammount of predictors. Finaly, we used 24 principal components to train a random forest modelusing 10-fold cross validation. The resulting model reported a 97.34% accuracy on a test set, with highest accuracy (99.08%) for classification of class A excercise and lowest accuracy (96.08%) for class C
+
+# Data Import and Preprocessing
+
+We will select a clasification method for data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants that perform wheight lifting exercises. More details of the experiment can be accessed on the website from [groupware@LES](http://groupware.les.inf.puc-rio.br/har).
+
+First we will get the training data from the internet
+```{r,cache=TRUE}
+setInternet2(TRUE)
+download.file(url = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+              destfile = "train.csv")
+```
+```{r}
+library(data.table)
+data <- fread("train.csv")
+```
+
+From quick inspection we notice that the first seven variables are labels, therefore we can skip them.
+
+```{r, results='hide'}
+data[, names(data)[1:7] := NULL, with = F]
+```
+
+We transform columns to numeric (except outcome), since some columns have been read as character
+
+```{r, warning=FALSE, results='hide'}
+outcome <- as.factor(data[, classe])
+data <- data[, lapply(.SD, as.numeric), .SDcols = -153]
+data[, classe := outcome]
+```
+
+We drop all columns that are form by more than 70% NA
+
+```{r, results='hide'}
+to.drop <- data[,sapply(.SD, function(x) sum(is.na(x)))]
+to.drop <- to.drop > 0.70*(nrow(data))
+data[, names(data)[to.drop] := NULL, with = F]
+```
+
+We have reduced the set to:
+```{r}
+dim(data)
+```
+
+We will check if the outcome is balanced
+```{r}
+summary(data[, classe])
+```
+We have similar ammounts of samples for each class, therefore we don't have to spend effort in downsampling the classes and we can procede in the normal way.
+
+Now we separate the data in training and test set
+```{r, warning=FALSE}
+library(caret)
+set.seed(1234)
+train.index <- createDataPartition(y = data[, classe], p = 0.6, list = T)
+training <- data[train.index[[1]], ]
+testing <- data[-train.index[[1]], ]
+```
+
+We have 52 predictors. Next we will check how correlated are these variables
+
+```{r, fig.height= 8, fig.width= 8, warning=FALSE}
+M <- (cor(training[, .SD, .SDcols = -53]))
+library(ggplot2)
+library(reshape)
+M.m <- melt(M)
+ggplot(M.m, aes(X1, X2, fill = value)) + 
+    geom_tile() +
+    scale_fill_gradient2(low = "blue",  high = "yellow") +
+    ggtitle("Correlation matrix of predictors") + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+In the plot we can see several areas with high colors, which means, variables with high correlation. This let us to think that we could benefit from principal component analysis to reduce the number of predictors.
+
+We use caret to generate new uncorrelated predictors. And use principal components that explain at least 95% of the variance on the data
+ 
+```{r}
+preProc <- preProcess(training[, .SD, .SDcols = -53], method = 'pca', thresh = 0.95)
+preProc
+```
+
+From the info of the pre processing object we notice that we need only 24 variables to explain the variability of the data. We will use this pre procesing to train our model later 
+
+# Model Fitting
+
+We will try fititng a random forest model to classify our data. We chose random forest for two main reasons: random forest perform very well in classification, and they already "include" cross validation.
+
+In random forest, each three is constructed using a bootstrap sample of the training data. To calculate the missclasification rates in the training set, each sample is pased only on the trees that did not use it for train.Therefore, the reported error should be already a good approximation of the error in a test set. More info can be read [here](http://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm) 
+
+However, for this assignment we will simply use k-folds cross validation with small number of folds since the machine we use has very low computation power
+
+Now we train our random forest model. We will use the principal components pre procesing object derived from last section.
+```{r, message=FALSE, cache=TRUE}
+set.seed(999)
+trainPC <- predict(preProc, training[, .SD, .SDcols = -53])
+fitControl <- trainControl(method = "cv",
+                           number = 10)
+modelFit <- train(training[, classe] ~., method = "rf", data = trainPC, 
+                  proximity = F, trControl = fitControl)
+modelFit
+```
+
+The best model reports an out of sample accuracy of 100% for a model with mtry=2
+Now we will check the confusion matrix on the trining set
+
+```{r, warning=FALSE,message=FALSE}
+confusionMatrix(training[, classe], predict(modelFit, trainPC))
+```
+
+The model is able to classify correctly all the data in the training set, which might be caused by overfitting.
+
+Most importantly is chscking the accuracy in our test set because our model is not biased for that data. Again, we must first use the same pre procesing that we use for the training set and then we can predict using the modelFit model:
+
+
+```{r}
+testPC <- predict(preProc, testing[, .SD, .SDcols = -53])
+confusionMatrix(testing[, classe], predict(modelFit, testPC))
+```
+
+For the test set we get an accuracy of 97.3% which we consider as acceptable. We can also examine the indivifual classes and notice that most of the errors come from class D, which means that is the most difficult class to identify.
+
+# Conclusion
+
+We used data comming from wearable devices, registring different acceleration quantities when the user performs dumbell excercises. First, we performed data cleaning. From the original 106 columns we were able to reduce the data to 52 predictors and one outcome variable by simple inspection. We performed correlation analysis and notice that a large ammount of variables have large correlation and concluded that the modelling could benefit from using principal component analysis in order to reduce the size of the data. We fitted a random forest model to predict the outcome variable using 24 principal components as predictors. Since the computer we used for this work is not particularly powerfull we limited our cross validation to a 10-fold cross validation. We came up with a model that has an 97% accuracy on a test data set.
